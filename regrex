@@ -1,0 +1,438 @@
+
+import sqlite3
+import os 
+import sys 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from bs4 import BeautifulSoup
+import csv
+import re
+conn = sqlite3.connect('database/introds.db')
+res_tgdd = conn.execute('select * from tgdd_fetch_results').fetchall()
+def get_specs(soup: BeautifulSoup, data_id: int):
+    result = soup.find('li', {'data-id': str(data_id)})
+    if result:
+        ctRight = result.find('div', class_='ctRight')
+        if ctRight:
+            a_tag = ctRight.find('a', class_='comma')
+            if a_tag:
+                return a_tag.text.strip()
+            else:
+                return ctRight.text.strip()
+    return "Kekw"
+
+data_list = []
+
+for i in res_tgdd:
+    manufacturer = i[1]
+    raw_path = i[3]
+    spec_path = i[4]
+    with open(spec_path, 'r', encoding='utf-8') as f1:
+        spec_html = f1.read()
+    spec_soup = BeautifulSoup(spec_html, 'html.parser')
+
+    #CPU: CPU manufacturer: 'AMD' or 'Intel', CPU brand modifier: int, and CPU generation: int (From '7535HS' -> 7 or '1255U' -> 12)
+    cpu_name = get_specs(spec_soup, 28727)
+
+    cpu_manufacturer = cpu_name.split()[0]
+    if cpu_manufacturer == "Intel":
+        cbm_pattern = re.compile(r'i[3579]')
+        cbm_match = re.search(cbm_pattern, cpu_name)
+        if cbm_match:            
+            cpu_brand_modifier = cbm_match.group()[1]
+            cpu_brand_modifier = int(cpu_brand_modifier)
+            cg_pattern = re.compile(r'\d{4,5}[A-Za-z]{1,2}')
+            cg_match = re.search(cg_pattern, cpu_name)
+            if cg_match:
+                cpu_generation = cg_match.group()[:2]
+                cpu_generation = int(cpu_generation)
+            else:
+                cpu_generation = None
+        else:
+            cpu_brand_modifier = None    
+            cpu_generation = None
+    elif cpu_manufacturer == "AMD":
+        cpu_brand_modifier = cpu_name.split()[2]
+        cpu_brand_modifier = int(cpu_brand_modifier)
+        cpu_generation = cpu_name.split()[4][0]
+        cpu_generation = int(cpu_generation)
+
+    cpu_speed = get_specs(spec_soup, 97) 
+    cs_pattern = re.compile(r'(\d+(\.\d+)?)\s*GHz')
+    cs_match = re.search(cs_pattern, cpu_speed)
+    if cs_match:
+        cpu_speed = float(cs_match.group(1))
+    else:
+        cpu_speed = None
+
+    #RAM: int (unit: GB) and bus: int (unit: MHz)
+    ram = get_specs(spec_soup, 146)
+    ram_pattern = re.compile(r'(\d+)\s*GB')
+    ram_match = re.search(ram_pattern, ram)
+    if ram_match:
+        ram = int(ram_match.group(1))
+    else:
+        ram = None
+
+    ram_type = get_specs(spec_soup, 149).split()[0]
+
+    bus = get_specs(spec_soup, 155)
+    bus_pattern = re.compile(r'(\d+)\s*MHz')
+    bus_match = re.search(bus_pattern, bus)
+    if bus_match:
+        bus = int(bus_match.group(1))
+    else: 
+        bus = None
+
+    #Storage: int (unit: GB)
+    storage = get_specs(spec_soup, 184)
+    storage_pattern = re.compile(r'(\d+)\s*(GB|TB)')
+    storage_match = re.search(storage_pattern, storage)
+    if storage_match:
+        storage = int(storage_match.group(1))
+        if storage_match.group(2) == "TB":
+            storage = storage * 1024 
+    else:
+        storage = None
+    
+    #Screen: Screen size: 'int x int' and Refresh rate: int (Unit: Hz)
+    screen_size = float(get_specs(spec_soup, 187).replace(' inch', '').strip())
+    
+    screen_resolution = get_specs(spec_soup, 189)
+    sr_pattern = re.compile(r'(\d+)\s*x\s*(\d+)')
+    sr_match = re.search(sr_pattern, screen_resolution)
+    if sr_match:
+        sr1 = sr_match.group(1)
+        sr2 = sr_match.group(2)
+        screen_resolution = sr1 + "x" + sr2
+    else:
+        screen_resolution = None
+
+    refresh_rate = int(get_specs(spec_soup, 29056).replace(' Hz', '').strip())
+
+    #GPU manufacturer: 'AMD', 'Nvidia' or 'Intel'
+    vga = get_specs(spec_soup,28123)
+    gpu_manufacturer = None
+    gpu_manufacturers = ['AMD', 'Nvidia', 'Intel', 'GeForce']
+    for i in gpu_manufacturers:
+        if i.lower() in vga.lower():
+            gpu_manufacturer = i
+    if gpu_manufacturer == "GeForce":
+        gpu_manufacturer = "Nvidia"
+
+    #Weight: float (unit: kg)
+    weight = get_specs(spec_soup, 7779)
+    w_pattern = re.compile(r'(\d+(\.\d+)?)\s*kg')
+    w_match = re.search(w_pattern, weight)
+    if w_match:
+        weight = float(w_match.group(1))
+    else:
+        weight = None
+
+    #Battery: float (unit: Wh)
+    battery = get_specs(spec_soup, 228)
+    battery_pattern = re.compile(r'(\d+(\.\d+)?)\s*Wh')
+    battery_match = re.search(battery_pattern, battery)
+    if battery_match:
+        battery = float(battery_match.group(1))
+    else:
+        battery = None
+
+
+    with open(raw_path, 'r', encoding='utf-8') as f1:
+        raw_html = f1.read()
+    raw_soup = BeautifulSoup(raw_html, 'html.parser')
+    try: 
+        price = int(raw_soup.find('p', {'class': 'box-price-old'}).text.replace('₫', '').replace('.', '').strip())
+    except:
+        try:
+            price = int(raw_soup.find('p', {'class': 'box-price-present'}).text.replace('₫', '').replace('.', '').strip())
+        except:
+            price = None
+    product = {
+        "Manufacturer": manufacturer,
+        "CPU Name": cpu_name,
+        "CPU manufacturer": cpu_manufacturer,
+        "CPU brand modifier": cpu_brand_modifier,
+        "CPU generation": cpu_generation,
+        "CPU Speed (GHz)": cpu_speed,
+        "RAM (GB)": ram,
+        "RAM Type": ram_type,
+        "Bus (MHz)": bus,
+        "Storage (GB)": storage,
+        "Screen Size (inch)": screen_size,
+        "Screen Resolution": screen_resolution,
+        "Refresh Rate (Hz)": refresh_rate,
+        "GPU manufacturer": gpu_manufacturer,
+        "Weight (kg)": weight,
+        "Battery": battery,
+        "Price (VND)": price
+    }
+    data_list.append(product)
+
+csv_file_path = "tgdd.csv"
+csv_columns = list(data_list[0].keys())
+
+with open(csv_file_path, 'w', newline='') as csv_file:
+    writer = csv.DictWriter(csv_file, fieldnames=csv_columns)
+    writer.writeheader()
+    for data in data_list:
+        writer.writerow(data)
+
+print(f'Data has been exported to {csv_file_path}')
+Data has been exported to tgdd.csv
+res_anphat = conn.execute('select * from anphat_fetch_results').fetchall()
+data_list_anphat = []
+for i in res_anphat:
+    vga = cpu = ram = storage = screen = battery = weight = price = cpu_manufacturer = cpu_generation = cpu_generation = cpu_speed = ram_type = bus = screen_resolution = screen_size = refresh_rate = None
+    manufacturer = i[1]
+    path = i[3]
+    with open(path, 'r', encoding='utf-8') as f1:
+        html = f1.read()
+    soup = BeautifulSoup(html, 'html.parser')
+    #All the specs are saved in 'item' classes in a single 'div.pro-info-summary span'
+    specs_from_html = [span.get_text(strip=True) for span in soup.select('div.pro-info-summary span.item')]
+    try:
+        cpu = specs_from_html[0].replace("-"," ").replace("™","").replace("®","").replace("  ", " ").lower()
+        for i in specs_from_html[1:]:
+            if "RAM:" in i:
+                ram = i.replace("-"," ").lower()
+            elif "Ổ cứng:" in i:
+                storage = i.lower()
+            elif "Màn hình:" in i:
+                screen = i.lower()
+            elif "Pin:" in i:
+                battery = i.lower().replace("whrs", "wh").replace("whr", "wh")
+            elif "Cân nặng:" in i:
+                weight = i.lower()  
+            elif "VGA:" in i:
+                vga = i.lower()
+    # try:
+    #     cpu = list_from_html[0].replace("CPU: ", "")
+    #     ram = list_from_html[1]
+    #     storage = list_from_html[2]
+    #     screen = list_from_html[4]
+    #     battery = list_from_html[5]
+        
+    #     weight = list_from_html[6]
+    #     w_pattern = re.compile(r'(\d+(\.\d+)?)\s*kg')
+    #     w_match = re.search(w_pattern, weight)
+    #     if w_match:
+    #         weight = float(w_match.group(1))
+    #     else:
+    #         weight = None
+    except:        
+        continue
+
+    #CPU: CPU manufacturer: 'AMD' or 'Intel', CPU brand modifier: int, and CPU generation: int (From '7535HS' -> 7 or '1255U' -> 12)
+    try:
+        if "ryzen" in cpu or "amd" in cpu:
+            cpu_manufacturer = "AMD"
+            cpu.replace("r5", "5").replace("r9", "9")
+            cbm_pattern = re.compile(r'ryzen\s+[3579]')
+            cbm_match = re.search(cbm_pattern, cpu)
+            if cbm_match:            
+                cpu_brand_modifier = cbm_match.group()[-1]
+                cpu_brand_modifier = int(cpu_brand_modifier)
+                cg_pattern = re.compile(r'\d{4,5}[a-z]{1,2}')
+                cg_match = re.search(cg_pattern, cpu)
+                if cg_match:
+                    cpu_generation = cg_match.group()[:1]
+                    cpu_generation = int(cpu_generation)
+                else:
+                    cpu_generation = None
+            else:
+                cpu_brand_modifier = None    
+                cpu_generation = None
+            
+        elif cpu != None:
+            cpu_manufacturer = "Intel"
+            cbm_pattern = re.compile(r'i[3579]')
+            cbm_match = re.search(cbm_pattern, cpu)
+            if cbm_match:            
+                cpu_brand_modifier = cbm_match.group()[1]
+                cpu_brand_modifier = int(cpu_brand_modifier)
+                cg_pattern = re.compile(r'\d{4,5}[a-z]{1,2}')
+                cg_match = re.search(cg_pattern, cpu)
+                if cg_match:
+                    cpu_generation = cg_match.group()[:2]
+                    cpu_generation = int(cpu_generation)
+                else:
+                    cpu_generation = None
+            else:
+                cpu_brand_modifier = None    
+                cpu_generation = None
+        else:
+            cpu_manufacturer = cpu_brand_modifier = cpu_generation = None
+    except:
+        pass 
+
+    try:
+        cs_pattern = re.compile(r'to\s+(\d+(\.\d+)?)\s*ghz')
+        cs_match = re.search(cs_pattern, cpu)
+        if cs_match:
+            cpu_speed = float(cs_match.group(1))
+        else:
+            cs_pattern = re.compile(r'(\d+(\.\d+)?)\s*ghz')
+            cs_match = re.search(cs_pattern, cpu)
+            if cs_match:
+                cpu_speed = float(cs_match.group(1))
+            else:
+                cpu_speed = None
+    except:
+        cpu_speed = None
+
+    #RAM: int (unit: GB) and bus: int (unit: MHz)
+    ram_info = ram
+    try:
+        ram_pattern = re.compile(r'(\d+)\s*gb')
+        ram_match = re.search(ram_pattern, ram)
+        if ram_match:
+            ram = int(ram_match.group(1))
+        else:
+            ram = None
+    except:
+        ram = None
+
+    ram_type = None
+    ram_types = ["ddr4", "lpddr4", "lpddr4x", "ddr5", "lpddr5", "lpddr5x"]
+    for i in ram_types:
+        if i in ram_info:
+            ram_type = i.upper()
+            continue
+        
+    try:
+        bus_pattern = re.compile(r'\d{4}')
+        bus_match = re.search(bus_pattern, ram_info)
+        if bus_match:
+            bus = int(bus_match.group())
+        else: 
+            bus = None
+    except:
+        bus = None
+
+    #Storage: int (unit: GB)
+    try:
+        storage_pattern = re.compile(r'(\d+)\s*(gb|tb)')
+        storage_match = re.search(storage_pattern, storage)
+        if storage_match:
+            storage = int(storage_match.group(1))
+            if storage_match.group(2) == "tb":
+                storage = storage * 1024 
+        else:
+            storage = None
+    except:
+        storage = None
+
+    #Screen: Screen size: 'int x int' and Refresh rate: int (Unit: Hz)
+    try:
+        ss_pattern = re.compile(r'\d+(\.\d+)?')
+        ss_match = re.search(ss_pattern, screen)
+        if ss_match:
+            screen_size = float(ss_match.group())
+            if screen_size < 10 or screen_size > 50:
+                screen_size = None
+        else:
+            screen_size = None 
+    except:
+        screen_size = None
+
+    try:
+        sr_pattern = re.compile(r'(\d+)\s*x\s*(\d+)')
+        sr_match = re.search(sr_pattern, screen)
+        if sr_match:
+            sr1 = sr_match.group(1)
+            sr2 = sr_match.group(2)
+            screen_resolution = sr1 + "x" + sr2
+        else:
+            screen_resolution = None
+    except:
+        screen_resolution = None
+
+    try:
+        rr_pattern = re.compile(r'(\d+)\s*hz')
+        rr_match = re.search(rr_pattern, screen)
+        if rr_match:
+            refresh_rate = int(rr_match.group(1))
+        elif screen != None:
+            refresh_rate = 60
+        else: 
+            refresh_rate = None
+    except:
+        refresh_rate = None
+
+    #GPU manufacturer: 'AMD', 'Nvidia' or 'Intel'
+    try:
+        gpu_manufacturer = None
+        gpu_manufacturers = ['AMD', 'Nvidia', 'Intel', 'GeForce']
+        for i in gpu_manufacturers:
+            if i.lower() in vga:
+                gpu_manufacturer = i
+        if gpu_manufacturer == "GeForce":
+            gpu_manufacturer = "Nvidia"
+    except:
+        vga = None
+
+    #Weight: float (unit: kg)
+    try:
+        w_pattern = re.compile(r'(\d+(\.\d+)?)\s*kg')
+        w_match = re.search(w_pattern, weight)
+        if w_match:
+            weight = float(w_match.group(1))
+        else:
+            w_pattern_g = re.compile(r'(\d+(\.\d+)?)\s*g')
+            w_match_g = re.search(w_pattern_g, weight)
+            if w_match_g:
+                weight = float(w_match_g.group(1))/1000
+            else:
+                weight = None
+    except:
+        weight = None
+
+    #Battery: float (unit: Hz)
+    try:
+        battery_pattern = re.compile(r'(\d+(\.\d+)?)\s*wh')
+        battery_match = re.search(battery_pattern, battery)
+        if battery_match:
+            battery = float(battery_match.group(1))
+        else:
+            battery = None
+    except:
+        battery = None
+        
+    price = soup.find('del', class_='font-500')
+    if price:
+        price = int(price.get_text(strip = True).replace('.','').replace(' đ',''))
+    else: 
+        price = None
+
+    
+    product = {
+        "Manufacturer": manufacturer,
+        "CPU Name": cpu,
+        "CPU manufacturer": cpu_manufacturer,
+        "CPU brand modifier": cpu_brand_modifier,
+        "CPU generation": cpu_generation,
+        "CPU Speed (GHz)": cpu_speed,
+        "RAM (GB)": ram,
+        "RAM Type": ram_type,
+        "Bus (MHz)": bus,
+        "Storage (GB)": storage,
+        "Screen Size (inch)": screen_size,
+        "Screen Resolution": screen_resolution,
+        "Refresh Rate (Hz)": refresh_rate,
+        "GPU Manufacturer": gpu_manufacturer,
+        "Weight (kg)": weight,
+        "Battery": battery,
+        "Price (VND)": price
+    }
+    data_list_anphat.append(product)
+
+csv_file_path = "laptop_anphat.csv"
+csv_columns = list(data_list_anphat[0].keys())
+
+with open(csv_file_path, 'w', newline='') as csv_file:
+    writer = csv.DictWriter(csv_file, fieldnames=csv_columns)
+    writer.writeheader()
+    for data in data_list_anphat:
+        writer.writerow(data)
